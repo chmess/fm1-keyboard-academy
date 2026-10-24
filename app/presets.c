@@ -5,6 +5,8 @@
 #include "sampledrum.h"
 #include <string.h>
 
+#ifdef FM1_ORIGINAL_DEMOS
+
 /* FM1 arrangements. Small musical recipes expand into the normal
  * editable project format, avoiding sixteen 4 KiB images in program Flash.
  * No random generation, engine allocation or live-state changes happen here.
@@ -283,3 +285,22 @@ int groove_factory_build(unsigned index, struct groove_project *p)
     }
     return groove_project_valid(p) ? 0 : GROOVE_PROJECT_INVALID;
 }
+#else
+
+/* FM1 Learn reuses the factory-project browser for the first sixteen
+ * lessons. Sound presets and FM algorithms are separate and stay intact. */
+#include "lessons.h"
+
+const char *groove_factory_name(unsigned index)
+{
+    return index < GROOVE_FACTORY_PROJECTS ? groove_lesson_name(index) : 0;
+}
+
+int groove_factory_build(unsigned index, struct groove_project *project)
+{
+    if (!project || index >= GROOVE_FACTORY_PROJECTS)
+        return GROOVE_PROJECT_INVALID;
+    int result = groove_project_capture(project);
+    return result ? result : groove_lesson_build(index, 0, project);
+}
+#endif

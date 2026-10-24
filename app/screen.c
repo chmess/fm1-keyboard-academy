@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
 #include "instrument.h"
+#include "learn.h"
+#include "lessons.h"
 #include "fm_patch.h"
 #include "version.h"
 #include "fm1_engine_control.h"
@@ -11,7 +13,8 @@ enum {
     ACCENT = 0x07ff,
     DIM = 0x738e,
     GREEN = 0x07e0,
-    AMBER = 0xfd20
+    AMBER = 0xfd20,
+    RED = 0xf800
 };
 /* Five columns per glyph, bit 0 at the top. Digits followed by uppercase. */
 static const uint8_t font[36][5] = {
@@ -123,7 +126,7 @@ static void text(unsigned x, unsigned y, const char *s, unsigned scale, uint16_t
 }
 /* Eight tracks stay visible on HOME. SEQ maps the sixteen white keys to one
  * quarter of the 64-step pattern. All drawing and edits run on app_control. */
-enum { OVERVIEW, STEPS, FM_EDIT, FM_ENV, FM_LFO, TONE_EDIT, MIX, BLE, PROJECT, NAME, EFFECTS, SOURCE, ACTIONS, STEP_EDIT, RHYTHM, FM_QUICK, PRESET_BROWSER, ARP_EDIT, STARTUP };
+enum { OVERVIEW, STEPS, FM_EDIT, FM_ENV, FM_LFO, TONE_EDIT, MIX, BLE, PROJECT, NAME, EFFECTS, SOURCE, ACTIONS, STEP_EDIT, RHYTHM, FM_QUICK, PRESET_BROWSER, ARP_EDIT, LEARN, LESSON_BROWSER, STARTUP, GAME };
 enum { OCT_DOWN, OCT_UP, FX, SCL, ENV, LFO, EDIT, GLO, HOME, SAVE, ARP, SEQ, PLAY, REC };
 #define BUTTON(b) (1U << (b))
 static const uint16_t colors[8] = {0x3c9f, 0x07bf, 0x4eae, 0x06d4, 0xac9f, 0xed18, 0xff06, 0xfba5};
@@ -161,6 +164,10 @@ static unsigned music_page, subpage_return, project_return, rec_before_press, ef
 static unsigned seq_page, arp_page;
 static unsigned boot_active, boot_phase;
 static uint32_t boot_started;
+enum { GAME_MENU, GAME_DEMO, GAME_READY, GAME_PLAY, GAME_DONE };
+static unsigned game_phase, game_demo_light, game_play_light, game_metronome;
+static unsigned game_step, game_seen, game_chapter, game_options, game_auto_next;
+static uint32_t game_phase_at, game_wrong_until, game_last_input;
 static const char *const seq_pages[] = {"1/8 BASIC", "2/8 STEP DETAILS", "3/8 RHYTHM/REC", "4/8 LOCKS", "5/8 SYNC / LOOP", "6/8 MIDI TRACK", "7/8 MIDI ROUTING", "8/8 TRACK ROLE"};
 static unsigned rec_down, rec_used;
 static uint32_t rec_ms;
@@ -194,6 +201,7 @@ static uint32_t health_at, health_underruns, health_dropped, health_adapted, hea
 static int project_result;
 static unsigned project_reload, project_operation;
 static unsigned project_slot, project_factory, name_cursor;
+static unsigned lesson_slot;
 static unsigned preset_slot, preset_bank, preset_loaded;
 static unsigned preset_current_slot, preset_current_bank;
 static uint32_t preset_project_revision;
@@ -251,6 +259,19 @@ static struct groove_fm_controls frame_controls;
 static struct fm1_ble_device frame_devices[FM1_BLE_MAX_DEVICES];
 static uint32_t frame_time;
 
+static void learn_fit_octave(void)
+{
+    struct groove_learn_view lesson;
+    groove_learn_get(&lesson);
+    if (!lesson.active || lesson.complete) return;
+    for (int candidate = -2; candidate <= 2; ++candidate)
+        for (unsigned key = 0; key < 27; ++key)
+            if (groove_key_note(track, key, candidate) == lesson.expected_note) {
+                octave = candidate;
+                return;
+            }
+}
+
 /* Share frequently used control helpers instead of repeating their bodies
  * in every editor. These run at panel rate, outside the audio/scan paths. */
 static __attribute__((noinline)) int clamp(int value, int low, int high)
@@ -267,7 +288,8 @@ static void move_step(const struct groove_view *view, int delta, int pages)
 }
 static unsigned navigation_mode(void)
 {
-    return page == BLE || page == PROJECT || page == PRESET_BROWSER || page == MIX || page == NAME ||
+    return page == GAME && game_phase != GAME_PLAY ? 1U :
+        page == BLE || page == PROJECT || page == PRESET_BROWSER || page == LESSON_BROWSER || page == MIX || page == NAME ||
         (page >= SOURCE && page <= RHYTHM) || (page == STEPS && !writing) || glo_down;
 }
 static unsigned encoder_active(const int16_t values[7])
@@ -325,6 +347,68 @@ static int post(uint8_t command, uint8_t a, uint8_t b, unsigned bytes)
         return 1;
     retry_reset = 1;
     return 0;
+}
+
+static int game_start(uint32_t now)
+{
+    track = cursor = 0;
+    int result = groove_lesson_load(lesson_slot, track);
+    if (!result) {
+        int click = (int)groove_sequence_setting(1);
+        int wanted = game_metronome ? 2 : 0;
+        if (click != wanted) groove_sequence_setting_edit(1, wanted - click);
+        result = groove_learn_begin(track, 0, groove_sequence_length(track) - 1U);
+    }
+    if (result) return result;
+    groove_learn_reset();
+    learn_fit_octave();
+    game_phase = GAME_DEMO;
+    game_phase_at = now;
+    game_last_input = now;
+    game_step = 255;
+    game_seen = 0;
+    game_wrong_until = 0;
+    return post(0xfb, 0, 0, 1) ? 0 : -1;
+}
+
+static void game_tick(uint32_t now)
+{
+    if (page != GAME) return;
+    if (game_phase == GAME_DEMO) {
+        struct groove_view view = {0};
+        groove_get_view(track, 0, &view);
+        if (view.playing) {
+            if (game_seen && view.play_step < game_step) {
+                (void)post(0xfc, 0, 0, 1);
+                groove_learn_reset();
+                learn_fit_octave();
+                game_phase = GAME_READY;
+                game_phase_at = now;
+            } else {
+                game_step = view.play_step;
+                game_seen = 1;
+            }
+        }
+    } else if (game_phase == GAME_READY && now - game_phase_at >= 900U) {
+        game_phase = GAME_PLAY;
+        game_phase_at = game_last_input = now;
+    } else if (game_phase == GAME_PLAY && now - game_last_input >= 10000U) {
+        (void)game_start(now); /* No input: demonstrate the same phrase again. */
+    } else if (game_phase == GAME_DONE && game_auto_next && now - game_phase_at >= 2600U) {
+        struct groove_learn_view lesson;
+        groove_learn_get(&lesson);
+        unsigned attempts = lesson.correct + lesson.mistakes;
+        unsigned accuracy = attempts ? lesson.correct * 100U / attempts : 0;
+        if (accuracy >= 80U) {
+            ++lesson_slot;
+            if (lesson_slot >= GROOVE_LESSON_COUNT) lesson_slot = 0;
+            while (game_chapter + 1U < GROOVE_CHAPTER_COUNT &&
+                   lesson_slot >= groove_chapter_first(game_chapter) + groove_chapter_count(game_chapter))
+                ++game_chapter;
+            if (lesson_slot < groove_chapter_first(game_chapter)) game_chapter = 0;
+        }
+        (void)game_start(now); /* Below mastery: repeat; otherwise continue. */
+    }
 }
 /* Reuse the formatter across panel fields instead of duplicating it at every call. */
 static __attribute__((noinline)) void decimal(char out[12], int value, unsigned digits)
@@ -954,6 +1038,7 @@ static void radio_line(unsigned slot, unsigned y, const char *value, uint16_t co
     paint_fill(8, y, 224, 7, BACK);
     text(8, y, value, 1, color, BACK);
 }
+#ifdef FM1_FULL_UI
 static __attribute__((noinline)) void draw_ble(const struct fm1_ble_status *status)
 {
     static const char *const states[] = {"OFF", "IDLE", "WAITING FOR DEVICE",
@@ -1037,6 +1122,15 @@ static __attribute__((noinline)) void draw_ble(const struct fm1_ble_status *stat
     radio_line(3, 213, error, AMBER);
     radio_line(4, 229, "PRESETS ACTION  SAVE OK  HOME EXIT", DIM);
 }
+#else
+static void draw_ble(const struct fm1_ble_status *status)
+{
+    (void)status;
+    paint_fill(0, 31, 240, 209, BACK);
+    text(8, 70, "BLUETOOTH RUNS AUTOMATICALLY", 1, TEXT, BACK);
+    text(8, 100, "USE HOME FOR LEARNING", 1, DIM, BACK);
+}
+#endif
 static __attribute__((noinline)) void project_draw(void)
 {
     if (project_drawn_revision != groove_project_revision())
@@ -1182,7 +1276,21 @@ static void leds(const struct groove_view *v, unsigned visible)
 {
     uint32_t bits = 0;
     unsigned first = step_first(v), blink = (frame_time / 250U) & 1U;
-    if (visible == STEPS && !writing) {
+    if (visible == GAME) {
+        uint8_t wanted = 255;
+        if (game_phase == GAME_DEMO && game_demo_light && v->playing) {
+            struct groove_step cell = {0};
+            groove_sequence_read(track, v->play_step, &cell, 1);
+            if (cell.velocity) wanted = cell.note;
+        } else if (game_phase == GAME_PLAY && game_play_light) {
+            struct groove_learn_view lesson;
+            groove_learn_get(&lesson);
+            if (lesson.active && !lesson.complete) wanted = lesson.expected_note;
+        }
+        for (unsigned key = 0; key < 27; ++key)
+            if (wanted < 128 && groove_key_note(track, key, octave) == wanted)
+                bits |= 1U << key;
+    } else if (visible == STEPS && !writing) {
         uint64_t lane =
             groove_pad_count(track) != 0 ? groove_drum_steps(track, drum) : v->active_steps;
         for (unsigned i = 0; i < 16; ++i)
@@ -1229,7 +1337,7 @@ static void leds(const struct groove_view *v, unsigned visible)
         | ((visible == FM_EDIT && (fm_group == 4 || fm_group == 5)) << SCL)
         | ((visible == STEPS || visible == ACTIONS || visible == STEP_EDIT || visible == RHYTHM) << SEQ)
         | ((writing != 0) << REC)
-        | ((v->playing != 0) << PLAY) | ((visible == MIX) << GLO)
+        | (((visible == GAME ? game_phase == GAME_MENU || game_phase == GAME_DONE : v->playing) != 0) << PLAY) | ((visible == MIX) << GLO)
         | ((visible == FM_EDIT || visible == TONE_EDIT || visible == FM_QUICK || visible == STEP_EDIT) << EDIT)
         | ((visible == FM_ENV) << ENV) | ((visible == FM_LFO) << LFO)
         | ((visible == PROJECT || visible == SOURCE || (visible == ACTIONS && action_confirm)) << SAVE);
@@ -1238,6 +1346,136 @@ static void leds(const struct groove_view *v, unsigned visible)
         if (changed & (1U << key)) fm1_led_set(key, (bits >> key) & 1U);
     button_led_cache = (uint16_t)bits;
 }
+
+static __attribute__((noinline)) void game_draw(void)
+{
+    struct groove_learn_view lesson;
+    groove_learn_get(&lesson);
+    unsigned wrong = game_phase == GAME_PLAY && (int32_t)(game_wrong_until - frame_time) > 0 &&
+                     ((frame_time / 100U) & 1U);
+    uint32_t sig = game_phase | (lesson_slot << 3) | (game_chapter << 9) |
+        (game_demo_light << 12) | (game_play_light << 13) | (game_metronome << 14) |
+        (game_options << 15) | ((uint32_t)lesson.correct << 16) | ((uint32_t)lesson.mistakes << 24);
+    sig = sig * 33U + frame_views[track].program + ((uint32_t)frame_patch[134] << 8) + (wrong << 16);
+    if (!paint_rendering) {
+        if (cache->middle_cache == sig) return;
+        cache->middle_cache = sig;
+    }
+    uint16_t bg = wrong ? RED : BACK;
+    paint_fill(0, 0, 240, 240, bg);
+    text(8, 10, game_phase == GAME_MENU ? "KEYBOARD ACADEMY" : groove_lesson_name(lesson_slot),
+         game_phase == GAME_MENU ? 2 : 1, ACCENT, bg);
+    if (game_phase == GAME_MENU) {
+        if (!game_options) {
+            char patch_name[11];
+            for (unsigned i = 0; i < 10; ++i)
+                patch_name[i] = frame_patch[145 + i] >= 32 && frame_patch[145 + i] <= 126 ? (char)frame_patch[145 + i] : ' ';
+            patch_name[10] = 0;
+            const char *help = game_demo_light ? "FULL" : game_play_light ? "NEXT" : "NONE";
+            text(8, 48, "K1 CHAPTER", 1, TEXT, bg); number(168, 44, game_chapter + 1U, 1, 2, ACCENT, bg);
+            text(8, 78, "K2 LESSON", 1, TEXT, bg); number(168, 74, lesson_slot - groove_chapter_first(game_chapter) + 1U, 1, 2, ACCENT, bg);
+            text(8, 108, "K3 SOUND", 1, TEXT, bg); text(132, 108, patch_name, 1, ACCENT, bg);
+            text(8, 138, "K4 HELP", 1, TEXT, bg); text(168, 138, help, 1, GREEN, bg);
+            text(8, 168, groove_chapter_name(game_chapter), 1, AMBER, bg);
+            text(8, 187, groove_lesson_name(lesson_slot), 2, TEXT, bg);
+            text(20, 222, "PLAY START   EDIT OPTIONS", 1, DIM, bg);
+        } else {
+            text(8, 48, "OPTIONS", 2, AMBER, bg);
+            text(8, 86, "K1 DEMO LIGHT", 1, TEXT, bg); text(176, 86, game_demo_light ? "ON" : "OFF", 1, GREEN, bg);
+            text(8, 116, "K2 PLAY LIGHT", 1, TEXT, bg); text(176, 116, game_play_light ? "ON" : "OFF", 1, GREEN, bg);
+            text(8, 146, "K3 METRONOME", 1, TEXT, bg); text(176, 146, game_metronome ? "ON" : "OFF", 1, GREEN, bg);
+            text(8, 176, "K4 AUTO NEXT", 1, TEXT, bg); text(176, 176, game_auto_next ? "ON" : "OFF", 1, GREEN, bg);
+            text(34, 222, "EDIT BACK   PLAY START", 1, DIM, bg);
+        }
+        return;
+    }
+    if (game_phase == GAME_DEMO) {
+        text(42, 66, "WATCH AND LISTEN", 2, AMBER, bg);
+        text(64, 120, "MY TURN", 2, TEXT, bg);
+        text(34, 190, game_demo_light ? "LIGHTS SHOW THE NOTES" : "LISTEN CAREFULLY", 1, DIM, bg);
+    } else if (game_phase == GAME_READY) {
+        text(34, 82, "NOW YOUR TURN", 2, GREEN, bg);
+        text(72, 134, "GET READY", 2, TEXT, bg);
+    } else if (game_phase == GAME_PLAY) {
+        if (wrong) text(48, 72, "WRONG - TRY AGAIN", 2, TEXT, bg);
+        else text(60, 62, "PLAY THE SONG", 2, GREEN, bg);
+        text(18, 116, game_play_light ? "FOLLOW THE LIGHT" : "PLAY FROM MEMORY", 1, TEXT, bg);
+        text(16, 164, "HITS", 1, DIM, bg);
+        number(58, 160, lesson.correct, 1, 2, GREEN, bg);
+        text(126, 164, "MISS", 1, DIM, bg);
+        number(168, 160, lesson.mistakes, 1, 2, AMBER, bg);
+    } else {
+        unsigned attempts = lesson.correct + lesson.mistakes;
+        unsigned accuracy = attempts ? lesson.correct * 100U / attempts : 0;
+        unsigned score = lesson.correct * 100U;
+        unsigned penalty = lesson.mistakes * 25U;
+        if (penalty < score) score -= penalty; else score = 0;
+        const char *rank = accuracy == 100 ? "PERFECT" : accuracy >= 90 ? "GREAT" : accuracy >= 75 ? "GOOD" : "KEEP GOING";
+        text(44, 48, "SONG COMPLETE", 2, GREEN, bg);
+        text(68, 88, rank, 2, ACCENT, bg);
+        text(30, 132, "SCORE", 1, DIM, bg); number(84, 126, score, 1, 2, TEXT, bg);
+        text(30, 160, "ACCURACY", 1, DIM, bg); number(108, 154, accuracy, 1, 2, TEXT, bg); text(150, 160, "%", 1, TEXT, bg);
+        text(18, 204, game_auto_next ? "NEXT STARTS AUTOMATICALLY" : "PLAY AGAIN   HOME MENU", 1, DIM, bg);
+    }
+}
+
+#if 0 /* Replaced by the course-first GAME screen. */
+static __attribute__((noinline)) void learn_draw(void)
+{
+    struct groove_learn_view lesson;
+    groove_learn_get(&lesson);
+    uint32_t sig = lesson.active | (lesson.complete << 1) | ((uint32_t)lesson.step << 2) |
+                   ((uint32_t)lesson.expected_note << 8) | ((uint32_t)lesson.correct << 16) |
+                   ((uint32_t)lesson.mistakes << 24);
+    if (notice) sig = signature(sig, notice, (unsigned)strlen(notice));
+    if (!paint_rendering) {
+        if (cache->middle_cache == sig) return;
+        cache->middle_cache = sig;
+    }
+    paint_fill(0, 31, 240, 209, BACK);
+    text(8, 42, "LEARN", 2, ACCENT, BACK);
+    if (!lesson.active) {
+        text(8, 88, "NO NOTES ON TRACK", 1, AMBER, BACK);
+        text(8, 116, "EDIT OR CHOOSE TRACK", 1, DIM, BACK);
+        return;
+    }
+    if (lesson.complete) {
+        text(38, 80, "LESSON COMPLETE", 2, GREEN, BACK);
+    } else {
+        char expected[12];
+        note_name(lesson.expected_note, expected);
+        text(8, 78, "NEXT NOTE", 1, DIM, BACK);
+        text(8, 98, expected, 4, TEXT, BACK);
+        text(92, 106, "STEP", 1, DIM, BACK);
+        number(128, 102, lesson.step + 1U, 2, 2, TEXT, BACK);
+    }
+    text(8, 150, "CORRECT", 1, DIM, BACK);
+    number(68, 146, lesson.correct, 1, 2, GREEN, BACK);
+    text(126, 150, "ERRORS", 1, DIM, BACK);
+    number(180, 146, lesson.mistakes, 1, 2, AMBER, BACK);
+    text(8, 196, notice ? notice : "REC RESET   SEQ EDIT   HOME EXIT", 1,
+         notice ? ACCENT : DIM, BACK);
+}
+static __attribute__((noinline)) void lesson_browser_draw(void)
+{
+    if (!paint_rendering) {
+        if (cache->middle_cache == lesson_slot) return;
+        cache->middle_cache = lesson_slot;
+    }
+    paint_fill(0, 31, 240, 209, BACK);
+    text(8, 42, "30 MELODIES", 1, ACCENT, BACK);
+    unsigned first = lesson_slot >= 2 ? lesson_slot - 2 : 0;
+    if (first + 5 > GROOVE_LESSON_COUNT) first = GROOVE_LESSON_COUNT - 5;
+    for (unsigned row = 0; row < 5; ++row) {
+        unsigned index = first + row, selected = index == lesson_slot;
+        if (selected) paint_fill(5, 64 + row * 27, 230, 23, PANEL);
+        number(10, 70 + row * 27, index + 1, 2, 1, selected ? ACCENT : DIM, selected ? PANEL : BACK);
+        text(34, 67 + row * 27, groove_lesson_name(index), 2, selected ? TEXT : DIM, selected ? PANEL : BACK);
+    }
+    text(8, 210, "SELECT   SAVE LOAD + LEARN", 1, DIM, BACK);
+    text(8, 231, "HOME BACK   SOUND KEPT", 1, DIM, BACK);
+}
+#endif
 static __attribute__((noinline)) void edit_page_draw(unsigned visible)
 {
     if (paint_rendering && paint_top + PAINT_ROWS <= 32) return;
@@ -1340,7 +1578,7 @@ static __attribute__((noinline, cold, minsize)) void boot_draw(void)
     if (cache->title_cache != 0) {
         cache->title_cache = 0;
         text(86, 48, "FM1", 4, TEXT, BACK);
-        text(81, 98, "OFFICIAL OPEN", 1, ACCENT, BACK);
+        text(87, 98, "FM1 LEARN", 1, ACCENT, BACK);
         text((240 - 12 * (sizeof FM1_RELEASE_VERSION - 1)) / 2, 120,
              FM1_RELEASE_VERSION, 2, TEXT, BACK);
         text(102, 208, "M-VAVE", 1, DIM, BACK);
@@ -1371,6 +1609,10 @@ static void draw_page_body(const struct fm1_ble_status *ble)
     if (visible == STARTUP) { boot_draw(); return; }
     const struct groove_view *views = frame_views, *v = &views[track];
     if (!paint_rendering) leds(v, visible);
+    if (visible == GAME) {
+        game_draw();
+        return;
+    }
     if (visible == PRESET_BROWSER) {
         preset_draw();
         return;
@@ -1605,6 +1847,7 @@ static void draw(const struct fm1_ble_status *ble)
         midi_active[t] = (int32_t)(midi_until[t] - frame_time) > 0;
     }
     frame_ble = *ble;
+#ifdef FM1_FULL_UI
     if (visible == BLE) {
         fm1_bluetooth_get_status(&frame_radio);
         frame_radio_flags = groove_settings_radio_flags();
@@ -1613,6 +1856,7 @@ static void draw(const struct fm1_ble_status *ble)
         for (unsigned i = 0; i < ble->count && i < FM1_BLE_MAX_DEVICES; ++i)
             fm1_ble_get_device(i, &frame_devices[i]);
     }
+#endif
     for (unsigned t = 0; t < GROOVE_TRACKS; ++t)
         groove_get_view(t, cursor, &frame_views[t]);
     if (visible == STEPS) {
@@ -1638,7 +1882,7 @@ static void draw(const struct fm1_ble_status *ble)
         groove_tone_copy(track, tone_part(), frame_patch);
     else if (visible == FM_LFO && groove_source_type(track) != GROOVE_DX7)
         groove_lfo_copy(track, frame_patch);
-    else if ((visible >= FM_EDIT && visible <= FM_LFO) || visible == NAME || visible == FM_QUICK)
+    else if ((visible >= FM_EDIT && visible <= FM_LFO) || visible == NAME || visible == FM_QUICK || visible == GAME)
         groove_fm_copy(track, frame_patch, &frame_controls);
     /* Merge new damage with unfinished bands. Input can replace a pending
      * frame; no stale queue of old encoder positions needs to be displayed. */
@@ -1753,7 +1997,8 @@ static void toggle_step(unsigned step)
 }
 void groove_screen_init(void)
 {
-    track = cursor = drum = writing = page = fm_group = op = 0;
+    track = cursor = drum = writing = fm_group = op = 0;
+    page = GAME;
     music_page = subpage_return = project_return = rec_before_press = OVERVIEW;
     rec_down = rec_used = 0;
     selected_note = 60;
@@ -1779,7 +2024,12 @@ void groove_screen_init(void)
     health_dma = dma.overruns; health_adapted = 0;
     project_result = 0;
     project_reload = project_operation = 0;
-    project_slot = project_factory = name_cursor = 0;
+    project_slot = project_factory = name_cursor = lesson_slot = 0;
+    game_phase = GAME_MENU;
+    game_demo_light = game_play_light = game_metronome = 1;
+    game_auto_next = 1;
+    game_step = 255; game_seen = game_chapter = game_options = 0;
+    game_phase_at = game_wrong_until = game_last_input = 0;
     preset_slot = preset_loaded = 0;
     preset_bank = 1;
     preset_current_slot = 0; preset_current_bank = 1;
@@ -1923,11 +2173,13 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         if (controls->buttons & BUTTON(HOME)) page = music_page;
         goto controls_done;
     }
+#ifdef FM1_FULL_UI
     if ((controls->buttons & (BUTTON(HOME) | BUTTON(GLO))) == (BUTTON(HOME) | BUTTON(GLO)) &&
         (pressed & (BUTTON(HOME) | BUTTON(GLO)))) {
         page = BLE; glo_down = glo_used = ble_view = ble_forget = ble_action = 0; ble_result = 0;
         goto controls_done;
     }
+#endif
     /* Keep the original HOME+PRESETS shortcut, including after HOME opens
      * the browser. A source replacement still requires an explicit SAVE. */
     if ((controls->buttons & BUTTON(HOME)) && controls->encoders[6] &&
@@ -1952,6 +2204,11 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         arp_long = 1; if (page != ARP_EDIT) arp_page = 0; page = ARP_EDIT;
         goto controls_done;
     }
+    if (page == GAME && (pressed & BUTTON(EDIT))) {
+        game_options ^= 1U;
+        cache->middle_cache = ~0U;
+        goto controls_done;
+    }
     /* Panel shortcuts precede modal editors. A menu must not swallow a
      * navigation key, transport control or the release of a held gesture. */
     if (glo_down && !(controls->buttons & BUTTON(GLO))) {
@@ -1973,9 +2230,12 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         if (pressed & BUTTON(HOME)) {
             if (page == ACTIONS && action_confirm) action_confirm = 0;
             else if (page == BLE && ble_forget == 1) ble_forget = 0;
-            else if (page == OVERVIEW) {
-                preset_refresh(); project_result = 0; page = PRESET_BROWSER;
-            } else page = OVERVIEW;
+            else if (page == GAME) {
+                if (game_phase == GAME_DEMO) (void)post(0xfc, 0, 0, 1);
+                if (game_phase == GAME_MENU) page = OVERVIEW;
+                else game_phase = GAME_MENU;
+            } else if (page == OVERVIEW) page = GAME;
+            else page = OVERVIEW;
         } else if (pressed & BUTTON(SEQ)) {
             page = STEPS; seq_page = 0; step_follow = 1; cache->shown_page = ~0U;
         } else if (pressed & BUTTON(FX)) {
@@ -2016,6 +2276,47 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
         groove_arp_set(track, !groove_arp_enabled(track));
         notice = groove_arp_enabled(track) ? "ARP ON / HOLD ARP FOR SETTINGS" : "ARP OFF / LIVE KEYS";
         notice_until = now + 2000U;
+    }
+    if (page == GAME) {
+        play_handled = 1;
+        if (game_phase == GAME_MENU || game_phase == GAME_DONE) {
+            if (game_options) {
+                if (controls->encoders[2]) game_demo_light = controls->encoders[2] > 0;
+                if (controls->encoders[3]) game_play_light = controls->encoders[3] > 0;
+                if (controls->encoders[4]) game_metronome = controls->encoders[4] > 0;
+                if (controls->encoders[5]) game_auto_next = controls->encoders[5] > 0;
+            } else {
+                if (controls->encoders[2]) {
+                    game_chapter = (unsigned)clamp((int)game_chapter + controls->encoders[2], 0, GROOVE_CHAPTER_COUNT - 1);
+                    lesson_slot = groove_chapter_first(game_chapter);
+                }
+                if (controls->encoders[3]) {
+                    unsigned first = groove_chapter_first(game_chapter);
+                    lesson_slot = (unsigned)clamp((int)lesson_slot + controls->encoders[3], (int)first,
+                        (int)(first + groove_chapter_count(game_chapter) - 1U));
+                }
+                if (controls->encoders[4]) {
+                    if (groove_source_type(track) != GROOVE_DX7) (void)groove_source_set(track, GROOVE_DX7);
+                    groove_control_edit(track, controls->encoders[4], 0, 0);
+                }
+                if (controls->encoders[5]) {
+                    int help = game_demo_light ? 2 : game_play_light ? 1 : 0;
+                    help = clamp(help + controls->encoders[5], 0, 2);
+                    game_demo_light = help == 2;
+                    game_play_light = help != 0;
+                }
+            }
+        }
+        if (pressed & (BUTTON(PLAY) | BUTTON(REC))) {
+            int result = game_start(now);
+            if (result) {
+                game_phase = GAME_MENU;
+                notice = "SONG LOAD FAILED";
+                notice_until = now + 1800U;
+            }
+            cache->middle_cache = ~0U;
+        }
+        goto controls_done;
     }
     if (pressed & BUTTON(REC)) {
         writing ^= 1U;
@@ -2141,7 +2442,7 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
             else if (action == 17) {
                 if (groove_source_type(track) == GROOVE_DX7) { page = NAME; name_cursor = 0; }
                 else r = -1;
-            } else if (action == 18) { page = BLE; ble_view = ble_forget = ble_action = 0; ble_result = 0; }
+            } else if (action == 18) { r = -1; }
             else {
                 if (!post(0xff, 0, 0, 1)) return 0;
                 memset(key_note, 0xff, sizeof key_note); project_keys = 0; writing = 0; page = OVERVIEW;
@@ -2202,6 +2503,7 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
                 groove_fm_name_edit(track, name_cursor,
                     edit_character((char)patch[145 + name_cursor], controls->encoders[2]));
         }
+#ifdef FM1_FULL_UI
     } else if (page == BLE) {
         if (encoder_active(controls->encoders)) ble_forget = 0;
         ble_action = (unsigned)clamp((int)ble_action + controls->encoders[6], 0, ble_view ? 3 : 1);
@@ -2243,6 +2545,7 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
                 else { ble_view = ble_action = ble_forget = 0; ble_result = 0; }
             }
         }
+#endif
     } else {
         if (page != BLE) {
             unsigned tracks = page == OVERVIEW || page == STEPS || page == FM_QUICK || page == ARP_EDIT ||
@@ -2552,6 +2855,21 @@ controls_done:
             key_note[key] = (uint8_t)note;
             key_track[key] = (uint8_t)track;
             selected_note = note;
+            if (page == GAME && game_phase == GAME_PLAY && (key_down & (1U << key))) {
+                enum groove_learn_result result = groove_learn_note(note);
+                if (page == GAME) {
+                    if (result != GROOVE_LEARN_IGNORED) game_last_input = now;
+                    if (result == GROOVE_LEARN_WRONG) game_wrong_until = now + 600U;
+                    else if (result == GROOVE_LEARN_COMPLETE) {
+                        game_phase = GAME_DONE;
+                        game_phase_at = now;
+                    }
+                }
+                if (result != GROOVE_LEARN_IGNORED) {
+                    learn_fit_octave();
+                    cache->middle_cache = ~0U;
+                }
+            }
             if (groove_pad_count(track) != 0)
                 drum = (unsigned)groove_pad_index(track, note);
 
@@ -2626,6 +2944,7 @@ void groove_screen_control(void)
     if (error && !notice) { notice = error == 1 ? "RECORD STOPPED - MIDI QUEUE FULL" : "CHORD LIMIT - LAST NOTES KEPT"; notice_until = now + 2000U; }
     struct groove_view transport = {0};
     groove_get_view(track, cursor, &transport);
+    game_tick(now);
     cursor %= transport.sequence_length;
     if (transport.playing && !transport_seen && !(page == STEPS && seq_page) && page != STEP_EDIT && page != ACTIONS) step_follow = 1;
     if (!transport.playing && transport_seen && step_follow && !writing)

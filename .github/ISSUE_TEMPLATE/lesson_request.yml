@@ -1,0 +1,25 @@
+name: Lesson request
+description: Propose a beginner exercise or public-domain melody
+title: "[Lesson]: "
+labels: [curriculum]
+body:
+  - type: input
+    id: objective
+    attributes:
+      label: Learning objective
+      placeholder: e.g. recognizing steps versus thirds
+    validations:
+      required: true
+  - type: textarea
+    id: sequence
+    attributes:
+      label: Exercise outline
+    validations:
+      required: true
+  - type: input
+    id: rights
+    attributes:
+      label: Copyright/public-domain source
+      description: Required for proposed melodies; write original exercise when not applicable.
+    validations:
+      required: true

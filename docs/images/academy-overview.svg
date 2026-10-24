@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">FM1 Keyboard Academy interface preview</title>
+  <desc id="desc">Three firmware screens: course selection, guided play, and results.</desc>
+  <rect width="1200" height="430" rx="28" fill="#090d12"/>
+  <g font-family="DejaVu Sans, sans-serif">
+    <text x="44" y="55" fill="#eff7f5" font-size="28" font-weight="700">FM1 KEYBOARD ACADEMY</text>
+    <text x="44" y="84" fill="#66e6ef" font-size="15">LEARN • LISTEN • PLAY • GROW</text>
+    <g transform="translate(40 110)">
+      <rect width="340" height="280" rx="18" fill="#111923" stroke="#26384a" stroke-width="3"/>
+      <text x="22" y="38" fill="#66e6ef" font-size="20" font-weight="700">KEYBOARD ACADEMY</text>
+      <text x="22" y="78" fill="#dce7e5" font-size="16">K1  CHAPTER</text><text x="270" y="78" fill="#66e6ef" font-size="19">1</text>
+      <text x="22" y="112" fill="#dce7e5" font-size="16">K2  LESSON</text><text x="270" y="112" fill="#66e6ef" font-size="19">2</text>
+      <text x="22" y="146" fill="#dce7e5" font-size="16">K3  SOUND</text><text x="212" y="146" fill="#66e6ef" font-size="15">E-PIANO</text>
+      <text x="22" y="180" fill="#dce7e5" font-size="16">K4  HELP</text><text x="256" y="180" fill="#5cff91" font-size="15">FULL</text>
+      <text x="22" y="216" fill="#ffb24d" font-size="14">FIND THE KEYS</text>
+      <text x="22" y="246" fill="#ffffff" font-size="21" font-weight="700">C AND D</text>
+      <text x="70" y="270" fill="#5cff91" font-size="13">PLAY START   EDIT OPTIONS</text>
+    </g>
+    <g transform="translate(430 110)">
+      <rect width="340" height="280" rx="18" fill="#111923" stroke="#26384a" stroke-width="3"/>
+      <text x="22" y="36" fill="#66e6ef" font-size="16">C D E</text>
+      <text x="57" y="91" fill="#5cff91" font-size="24" font-weight="700">PLAY THE SONG</text>
+      <text x="91" y="130" fill="#dce7e5" font-size="15">FOLLOW THE LIGHT</text>
+      <g transform="translate(34 154)">
+        <rect width="272" height="72" rx="8" fill="#f4f2e8"/>
+        <g fill="#111923"><rect x="35" width="21" height="43"/><rect x="75" width="21" height="43"/><rect x="155" width="21" height="43"/><rect x="195" width="21" height="43"/><rect x="235" width="21" height="43"/></g>
+        <rect x="98" y="3" width="37" height="66" rx="4" fill="#5cff91" stroke="#0f9b50" stroke-width="3"/>
+      </g>
+      <text x="26" y="258" fill="#7e8c96" font-size="14">HITS</text><text x="78" y="258" fill="#5cff91" font-size="22">07</text>
+      <text x="210" y="258" fill="#7e8c96" font-size="14">MISS</text><text x="270" y="258" fill="#ffb24d" font-size="22">01</text>
+    </g>
+    <g transform="translate(820 110)">
+      <rect width="340" height="280" rx="18" fill="#111923" stroke="#26384a" stroke-width="3"/>
+      <text x="22" y="36" fill="#66e6ef" font-size="16">ODE TO JOY</text>
+      <text x="58" y="86" fill="#5cff91" font-size="24" font-weight="700">SONG COMPLETE</text>
+      <text x="112" y="130" fill="#66e6ef" font-size="28" font-weight="700">GREAT</text>
+      <text x="58" y="175" fill="#7e8c96" font-size="16">SCORE</text><text x="180" y="175" fill="#ffffff" font-size="26">1375</text>
+      <text x="58" y="216" fill="#7e8c96" font-size="16">ACCURACY</text><text x="198" y="216" fill="#ffffff" font-size="26">92%</text>
+      <text x="57" y="258" fill="#7e8c96" font-size="13">NEXT STARTS AUTOMATICALLY</text>
+    </g>
+  </g>
+</svg>

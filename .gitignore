@@ -1,4 +1,5 @@
 /build/
+/.toolchain/
 /sdk/lib/*
 !/sdk/lib/libfm1_engine.a
 !/sdk/lib/libc.a
