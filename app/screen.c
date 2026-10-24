@@ -288,7 +288,10 @@ static void move_step(const struct groove_view *view, int delta, int pages)
 }
 static unsigned navigation_mode(void)
 {
-    return page == GAME && game_phase != GAME_PLAY ? 1U :
+    /* Keep the keyboard live on the result screen.  Entering GAME_DONE in
+     * the note-on handler must not turn the final answer into an immediate
+     * note-off on the following panel scan. */
+    return page == GAME && game_phase != GAME_PLAY && game_phase != GAME_DONE ? 1U :
         page == BLE || page == PROJECT || page == PRESET_BROWSER || page == LESSON_BROWSER || page == MIX || page == NAME ||
         (page >= SOURCE && page <= RHYTHM) || (page == STEPS && !writing) || glo_down;
 }
@@ -368,17 +371,27 @@ static int game_start(uint32_t now)
     game_step = 255;
     game_seen = 0;
     game_wrong_until = 0;
-    return post(0xfb, 0, 0, 1) ? 0 : -1;
+    /* game_tick starts from a rewound transport after a short visual/audio
+     * lead-in.  Starting here used Continue and could skip the first step. */
+    return 0;
 }
 
 static void game_tick(uint32_t now)
 {
     if (page != GAME) return;
     if (game_phase == GAME_DEMO) {
+        /* Give project/timbre replacement and the display half a second to
+         * settle, then use MIDI Start (rewind), never Continue.  game_seen:
+         * 0 = lead-in, 1 = Start queued, 2 = playhead observed. */
+        if (!game_seen) {
+            if (now - game_phase_at >= 500U && post(0xfa, 0, 0, 1))
+                game_seen = 1;
+            return;
+        }
         struct groove_view view = {0};
         groove_get_view(track, 0, &view);
         if (view.playing) {
-            if (game_seen && view.play_step < game_step) {
+            if (game_seen == 2 && view.play_step < game_step) {
                 (void)post(0xfc, 0, 0, 1);
                 groove_learn_reset();
                 learn_fit_octave();
@@ -386,7 +399,7 @@ static void game_tick(uint32_t now)
                 game_phase_at = now;
             } else {
                 game_step = view.play_step;
-                game_seen = 1;
+                game_seen = 2;
             }
         }
     } else if (game_phase == GAME_READY && now - game_phase_at >= 900U) {
@@ -2279,6 +2292,12 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
     }
     if (page == GAME) {
         play_handled = 1;
+        /* A beginner often plays as soon as GET READY appears.  Treat that
+         * first attack as the start of the turn instead of swallowing it. */
+        if (game_phase == GAME_READY && key_down) {
+            game_phase = GAME_PLAY;
+            game_phase_at = game_last_input = now;
+        }
         if (game_phase == GAME_MENU || game_phase == GAME_DONE) {
             if (game_options) {
                 if (controls->encoders[2]) game_demo_light = controls->encoders[2] > 0;
