@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2 — 2026-10-25
+
+- Decoupled demonstration key LEDs from the slower LCD rendering cycle.
+- Update illuminated keys directly on every observed sequencer step.
+- Keep fast lesson passages visually synchronized with their notes.
+
 ## v0.1.1 — 2026-10-25
 
 - Added a short lead-in before each demonstration.

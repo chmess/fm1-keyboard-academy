@@ -58,16 +58,16 @@ After ten seconds without input, the demonstration starts again automatically.
 
 ## Firmware download and safety
 
-The latest release asset is `FM1_KEYBOARD_ACADEMY_V03.fwsc`. Verify it before use:
+The latest release asset is `FM1_KEYBOARD_ACADEMY_V04.fwsc`. Verify it before use:
 
 ~~~sh
-sha256sum FM1_KEYBOARD_ACADEMY_V03.fwsc
-python3 verify_fwsc.py FM1_KEYBOARD_ACADEMY_V03.fwsc --expect FM-1_8241003
+sha256sum FM1_KEYBOARD_ACADEMY_V04.fwsc
+python3 verify_fwsc.py FM1_KEYBOARD_ACADEMY_V04.fwsc --expect FM-1_8241004
 ~~~
 
 The release keeps the verified stock-V15 16 KiB startup region byte-for-byte,
 uses the original 1 MiB flash layout and retains the 536,576-byte user region.
-V03 SHA-256: `5f9f71425095c601f98d7fd2b8b40f1417162d695a935531a4f086509a2ccce2`.
+V04 SHA-256: `c65d04439f57011d43483d336c501472a3e38ac51ebed327093225b5b30bff7c`.
 Only install on an FM-1 you are prepared to recover if an unofficial update
 fails. Keep power and USB connected for the entire two-stage update.
 
@@ -99,7 +99,7 @@ and the curriculum rationale is in [COURSE.md](docs/COURSE.md).
 
 ## Project status
 
-V03 is a public preview. Host tests and the complete PI32v2 build pass, and the
+V04 is a public preview. Host tests and the complete PI32v2 build pass, and the
 package has been installed successfully on a physical FM-1. The complete course
 still needs extended play-through testing across every lesson and sound.
 

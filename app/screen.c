@@ -252,6 +252,7 @@ struct draw_cache {
 static struct draw_cache saved_cache, band_cache, *cache = &saved_cache;
 static uint32_t led_cache;
 static uint16_t button_led_cache;
+static uint8_t game_demo_note;
 static struct groove_view frame_views[GROOVE_TRACKS];
 static uint8_t frame_step_notes[16], frame_effects[4];
 static uint8_t frame_patch[156];
@@ -352,6 +353,26 @@ static int post(uint8_t command, uint8_t a, uint8_t b, unsigned bytes)
     return 0;
 }
 
+static void key_led_apply(uint32_t bits)
+{
+    uint32_t changed = bits ^ led_cache;
+    for (unsigned key = 0; key < 27; ++key)
+        if (changed & (1U << key))
+            fm1_led_set(key + 14, (bits >> key) & 1U);
+    led_cache = bits;
+}
+
+static void game_demo_led(unsigned note)
+{
+    uint32_t bits = 0;
+    if (game_demo_light && note < 128)
+        for (unsigned key = 0; key < 27; ++key)
+            if (groove_key_note(track, key, octave) == note)
+                bits |= 1U << key;
+    game_demo_note = (uint8_t)note;
+    key_led_apply(bits);
+}
+
 static int game_start(uint32_t now)
 {
     track = cursor = 0;
@@ -371,6 +392,7 @@ static int game_start(uint32_t now)
     game_step = 255;
     game_seen = 0;
     game_wrong_until = 0;
+    game_demo_led(255);
     /* game_tick starts from a rewound transport after a short visual/audio
      * lead-in.  Starting here used Continue and could skip the first step. */
     return 0;
@@ -393,11 +415,17 @@ static void game_tick(uint32_t now)
         if (view.playing) {
             if (game_seen == 2 && view.play_step < game_step) {
                 (void)post(0xfc, 0, 0, 1);
+                game_demo_led(255);
                 groove_learn_reset();
                 learn_fit_octave();
                 game_phase = GAME_READY;
                 game_phase_at = now;
             } else {
+                if (view.play_step != game_step) {
+                    struct groove_step cell = {0};
+                    groove_sequence_read(track, view.play_step, &cell, 1);
+                    game_demo_led(cell.velocity ? cell.note : 255);
+                }
                 game_step = view.play_step;
                 game_seen = 2;
             }
@@ -1292,9 +1320,7 @@ static void leds(const struct groove_view *v, unsigned visible)
     if (visible == GAME) {
         uint8_t wanted = 255;
         if (game_phase == GAME_DEMO && game_demo_light && v->playing) {
-            struct groove_step cell = {0};
-            groove_sequence_read(track, v->play_step, &cell, 1);
-            if (cell.velocity) wanted = cell.note;
+            wanted = game_demo_note;
         } else if (game_phase == GAME_PLAY && game_play_light) {
             struct groove_learn_view lesson;
             groove_learn_get(&lesson);
@@ -1337,11 +1363,7 @@ static void leds(const struct groove_view *v, unsigned visible)
         bits &= ~((1U << edit_keys[8]) | (1U << edit_keys[9]));
         bits |= 1U << edit_keys[v->mono ? 8 : 9];
     }
-    uint32_t changed = bits ^ led_cache;
-    for (unsigned key = 0; key < 27; ++key)
-        if (changed & (1U << key))
-            fm1_led_set(key + 14, (bits >> key) & 1U);
-    led_cache = bits;
+    key_led_apply(bits);
     unsigned step_pages = visible == STEPS || visible == ACTIONS;
     bits = ((step_pages ? first > 0 : octave < 0) << OCT_DOWN)
         | ((step_pages ? first + 16 < v->sequence_length : octave > 0) << OCT_UP)
@@ -1354,7 +1376,7 @@ static void leds(const struct groove_view *v, unsigned visible)
         | ((visible == FM_EDIT || visible == TONE_EDIT || visible == FM_QUICK || visible == STEP_EDIT) << EDIT)
         | ((visible == FM_ENV) << ENV) | ((visible == FM_LFO) << LFO)
         | ((visible == PROJECT || visible == SOURCE || (visible == ACTIONS && action_confirm)) << SAVE);
-    changed = bits ^ button_led_cache;
+    uint32_t changed = bits ^ button_led_cache;
     for (unsigned key = 0; key < 14; ++key)
         if (changed & (1U << key)) fm1_led_set(key, (bits >> key) & 1U);
     button_led_cache = (uint16_t)bits;
@@ -2042,6 +2064,7 @@ void groove_screen_init(void)
     game_demo_light = game_play_light = game_metronome = 1;
     game_auto_next = 1;
     game_step = 255; game_seen = game_chapter = game_options = 0;
+    game_demo_note = 255;
     game_phase_at = game_wrong_until = game_last_input = 0;
     preset_slot = preset_loaded = 0;
     preset_bank = 1;
